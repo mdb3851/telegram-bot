@@ -3,11 +3,8 @@ import json
 import time
 import threading
 
-# ======= تنظیمات اولیه =======
 TOKEN = "7721995609:AAHFik1G49bu0OACtFWpv_NBHDzOESxVtTI"
 ADMINS = [1476858288, 6998318486]
-
-# لینک کانال‌ها برای چک عضویت
 CHANNELS = ["@zappasmagz", "@magzsukhte"]
 
 bot = telebot.TeleBot(TOKEN)
@@ -15,7 +12,6 @@ bot = telebot.TeleBot(TOKEN)
 DATA_FILE = "data.json"
 awaiting_video = {}
 
-# ======= بارگذاری و ذخیره اطلاعات =======
 def load_data():
     try:
         with open(DATA_FILE, "r") as f:
@@ -29,7 +25,6 @@ def save_data(data):
 
 data = load_data()
 
-# ======= تابع حذف پیام بعد 30 ثانیه =======
 def delete_message_after_30(chat_id, message_id):
     time.sleep(30)
     try:
@@ -37,14 +32,15 @@ def delete_message_after_30(chat_id, message_id):
     except Exception:
         pass
 
-# ======= استارت و بررسی عضویت =======
+# ذخیره پیام عضویت برای حذف بعد از تایید
+user_membership_message = {}
+
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     user_id = message.from_user.id
     args = message.text.split()
 
     if len(args) == 1:
-        # استارت ساده، پیام خوش آمد + توضیح کانال‌ها + دکمه بررسی عضویت
         keyboard = telebot.types.InlineKeyboardMarkup()
         for ch in CHANNELS:
             keyboard.add(telebot.types.InlineKeyboardButton(text=f"کانال {ch}", url=f"https://t.me/{ch.strip('@')}"))
@@ -54,9 +50,10 @@ def start_handler(message):
             "سلام حاجی!\n\n"
             "برای دریافت ویدیو ابتدا باید عضو کانال‌ها باشید."
         )
-        bot.send_message(user_id, text, reply_markup=keyboard)
+        sent_msg = bot.send_message(user_id, text, reply_markup=keyboard)
+        user_membership_message[user_id] = sent_msg.message_id
+
     else:
-        # اگر لینک استارت همراه پارامتر video بود (لینک ویدیو)
         param = args[1]
         if param.startswith("video"):
             code = param.replace("video", "")
@@ -65,11 +62,14 @@ def start_handler(message):
                 bot.send_message(user_id, "❌ این ویدیو پیدا نشد یا حذف شده است.")
                 return
 
-            # چک عضویت
             all_subscribed = True
             for ch in CHANNELS:
-                status = bot.get_chat_member(ch, user_id).status
-                if status in ["left", "kicked"]:
+                try:
+                    status = bot.get_chat_member(ch, user_id).status
+                    if status in ["left", "kicked"]:
+                        all_subscribed = False
+                        break
+                except Exception:
                     all_subscribed = False
                     break
 
@@ -77,34 +77,41 @@ def start_handler(message):
                 bot.send_message(user_id, "❌ شما عضو یکی از کانال‌ها نیستید! ابتدا عضو شوید.")
                 return
 
-            # ارسال ویدیو به کاربر
             sent = bot.send_video(user_id, file_id)
-
-            # ارسال پیام هشدار بلافاصله بعد ارسال ویدیو
             bot.send_message(user_id,
                 "⏱ فیلم های ارسالی ربات بعد از 30 ثانیه از ربات پاک میشوند.\n\n"
                 "✅ فیلم را در پی وی دوستان خود یا در پیام های ذخیره شده ارسال و بعد دانلود کنید.️")
-
-            # حذف ویدیو بعد 30 ثانیه
             threading.Thread(target=delete_message_after_30, args=(user_id, sent.message_id)).start()
 
-# ======= هندلر بررسی عضویت =======
 @bot.callback_query_handler(func=lambda call: call.data == "check_sub")
 def check_subscription(call):
     user_id = call.from_user.id
     all_subscribed = True
     for ch in CHANNELS:
-        status = bot.get_chat_member(ch, user_id).status
-        if status in ["left", "kicked"]:
+        try:
+            status = bot.get_chat_member(ch, user_id).status
+            if status in ["left", "kicked"]:
+                all_subscribed = False
+                break
+        except Exception:
             all_subscribed = False
             break
 
     if all_subscribed:
         bot.answer_callback_query(call.id, "✅ شما عضو همه کانال‌ها هستید. می‌توانید ویدیوها را دریافت کنید.")
+        # حذف پیام عضویت قبلی
+        if user_id in user_membership_message:
+            try:
+                bot.delete_message(user_id, user_membership_message[user_id])
+            except Exception:
+                pass
+            del user_membership_message[user_id]
+
+        # پیام خوش آمد بدون دکمه
+        bot.send_message(user_id, "🎉 عضویت شما تایید شد. حالا می‌توانید ویدیوها را دریافت کنید.")
     else:
         bot.answer_callback_query(call.id, "❌ شما عضو یکی از کانال‌ها نیستید! لطفا ابتدا عضو شوید.")
 
-# ======= دستور ارسال ویدیو توسط ادمین =======
 @bot.message_handler(commands=["sendvideo"])
 def send_video_command(message):
     user_id = message.from_user.id
@@ -114,7 +121,6 @@ def send_video_command(message):
     else:
         bot.send_message(user_id, "❌ شما ادمین نیستید.")
 
-# ======= دریافت ویدیو از ادمین =======
 @bot.message_handler(content_types=["video"])
 def receive_video(message):
     user_id = message.from_user.id
@@ -135,6 +141,5 @@ def receive_video(message):
     link = f"https://t.me/{bot_username}?start=video{code}"
     bot.send_message(user_id, f"✅ ویدیو ذخیره شد.\nلینک اشتراک:\n{link}")
 
-# ======= اجرای ربات =======
 print("Bot started...")
 bot.infinity_polling()
