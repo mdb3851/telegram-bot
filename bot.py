@@ -31,10 +31,10 @@ def save_data(data):
 
 data = load_data()
 
-awaiting_video = {}  # برای ادمین‌ها که آیا در حالت ارسال ویدیو هستند یا نه
+awaiting_video = {}  # منتظر دریافت ویدیو از ادمین‌ها
 
 
-# --- ارسال منوی اصلی برای کاربر ---
+# --- ساخت منوی اصلی با توجه به نقش کاربر ---
 def main_menu(user_id):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("بررسی عضویت ✅")
@@ -44,17 +44,20 @@ def main_menu(user_id):
     return markup
 
 
-# --- پیام خوش‌آمدگویی با دکمه‌های کانال ---
+# --- ارسال پیام خوش‌آمدگویی با دکمه‌های کانال و بررسی عضویت ---
 def send_welcome_with_channels(chat_id):
     markup = types.InlineKeyboardMarkup(row_width=1)
-
     for ch in CHANNELS:
         btn = types.InlineKeyboardButton(
-            text=f"عضویت در کانال {ch}", url=f"https://t.me/{ch.strip('@')}")
+            text=f"عضویت در کانال {ch}",
+            url=f"https://t.me/{ch.strip('@')}"
+        )
         markup.add(btn)
 
     check_btn = types.InlineKeyboardButton(
-        text="✅ بررسی عضویت", callback_data="check_membership")
+        text="✅ بررسی عضویت",
+        callback_data="check_membership"
+    )
     markup.add(check_btn)
 
     text = "سلام حاجی!\nبرای دریافت ویدیو ابتدا باید عضو کانال‌ها باشید."
@@ -65,7 +68,22 @@ def send_welcome_with_channels(chat_id):
 @bot.message_handler(commands=["start"])
 def handle_start(message):
     user_id = message.from_user.id
-    send_welcome_with_channels(user_id)
+    args = message.text.split()
+
+    # اگر لینک ویدیو همراه استارت آمد
+    if len(args) > 1 and args[1].startswith("video"):
+        code = args[1][5:]
+        if code in data["videos"]:
+            if check_user_membership(user_id):
+                file_id = data["videos"][code]
+                bot.send_video(user_id, file_id)
+                bot.send_message(user_id, "فیلم ارسال شد.", reply_markup=main_menu(user_id))
+            else:
+                send_welcome_with_channels(user_id)
+        else:
+            bot.send_message(user_id, "ویدیوی مورد نظر پیدا نشد.", reply_markup=main_menu(user_id))
+    else:
+        send_welcome_with_channels(user_id)
 
 
 # --- هندلر دکمه بررسی عضویت ---
@@ -81,7 +99,7 @@ def check_membership(call):
             if member.status in ["left", "kicked"]:
                 is_member = False
                 not_member_channels.append(ch)
-        except Exception as e:
+        except Exception:
             is_member = False
             not_member_channels.append(ch)
 
@@ -99,19 +117,16 @@ def check_membership(call):
         bot.send_message(user_id, text)
 
 
-# --- هندلر دکمه‌ها (متنی) ---
+# --- هندلر دکمه‌های متنی ---
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
     user_id = message.from_user.id
     text = message.text
 
-    # بررسی عضویت قبل از ارسال ویدیو
     if text == "ارسال ویدیو 🎥":
         if user_id not in ADMINS:
             bot.send_message(user_id, "❌ شما ادمین نیستید!")
             return
-
-        # بررسی عضویت ادمین در کانال‌ها هم اگر خواستی (اختیاری)
         if not check_user_membership(user_id):
             bot.send_message(user_id, "❌ ابتدا باید عضو کانال‌ها باشید.")
             return
@@ -128,11 +143,14 @@ def handle_text(message):
         else:
             bot.send_message(user_id, "❌ شما ادمین نیستید!")
 
+    elif text == "بازگشت 🔙":
+        bot.send_message(user_id, "به منوی اصلی بازگشتید.", reply_markup=main_menu(user_id))
+
     else:
         bot.send_message(user_id, "دستور نامعتبر است. لطفاً از منو استفاده کنید.")
 
 
-# --- تابع بررسی عضویت (استفاده داخلی) ---
+# --- بررسی عضویت کاربر ---
 def check_user_membership(user_id):
     for ch in CHANNELS:
         try:
@@ -144,7 +162,7 @@ def check_user_membership(user_id):
     return True
 
 
-# --- هندلر دریافت ویدیو ---
+# --- دریافت ویدیو از ادمین ---
 @bot.message_handler(content_types=["video"])
 def receive_video(message):
     user_id = message.from_user.id
@@ -157,7 +175,7 @@ def receive_video(message):
     video = message.video
     file_id = video.file_id
 
-    # کد یکتا
+    # کد یکتا برای ویدیو
     code = str(int(time.time()))
     data["videos"][code] = file_id
     save_data(data)
@@ -175,8 +193,8 @@ def delete_message_after_30(chat_id, message_id):
     time.sleep(30)
     try:
         bot.delete_message(chat_id, message_id)
-    except Exception as e:
-        print(f"❌ خطا در حذف پیام: {e}")
+    except Exception:
+        pass
 
 
 # --- پنل ادمین ساده ---
@@ -188,11 +206,9 @@ def send_admin_panel(user_id):
     bot.send_message(user_id, "پنل ادمین:", reply_markup=markup)
 
 
-# --- متغیر کنترل روشن یا خاموش بودن ربات ---
+# --- وضعیت ربات ---
 bot_active = True
 
-
-# --- هندلرهای پنل ادمین (نمونه) ---
 @bot.message_handler(func=lambda m: m.text == "خاموش کردن ربات 🔴" and m.from_user.id in ADMINS)
 def shutdown_bot(message):
     global bot_active
@@ -205,28 +221,6 @@ def start_bot(message):
     bot_active = True
     bot.send_message(message.chat.id, "ربات روشن شد.")
 
-# --- اینجا می‌تونی هندلرهای بیشتری برای مدیریت ویدیو و کاربران اضافه کنی ---
 
-
-# --- هندلر شروع با لینک ویدیو ---
-@bot.message_handler(commands=["start"])
-def handle_start_video(message):
-    user_id = message.from_user.id
-    args = message.text.split()
-    if len(args) > 1 and args[1].startswith("video"):
-        code = args[1][5:]
-        if code in data["videos"]:
-            if check_user_membership(user_id):
-                file_id = data["videos"][code]
-                bot.send_video(user_id, file_id)
-            else:
-                send_welcome_with_channels(user_id)
-        else:
-            bot.send_message(user_id, "ویدیوی مورد نظر پیدا نشد.")
-    else:
-        send_welcome_with_channels(user_id)
-
-
-# --- شروع ربات ---
 print("ربات در حال اجراست...")
 bot.infinity_polling()
