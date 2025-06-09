@@ -1,28 +1,26 @@
 import telebot
-from telebot import types
 import json
-import os
 import time
 import threading
 
+# ======= تنظیمات اولیه =======
 TOKEN = "7721995609:AAHFik1G49bu0OACtFWpv_NBHDzOESxVtTI"
-bot = telebot.TeleBot(TOKEN)
-
 ADMINS = [1476858288, 6998318486]
 
-CHANNELS = [
-    "@zappasmagz",
-    "@magzsukhte"
-]
+# لینک کانال‌ها برای چک عضویت
+CHANNELS = ["@zappasmagz", "@magzsukhte"]
+
+bot = telebot.TeleBot(TOKEN)
 
 DATA_FILE = "data.json"
+awaiting_video = {}
 
-# --- بارگذاری و ذخیره داده‌ها ---
+# ======= بارگذاری و ذخیره اطلاعات =======
 def load_data():
-    if os.path.exists(DATA_FILE):
+    try:
         with open(DATA_FILE, "r") as f:
             return json.load(f)
-    else:
+    except:
         return {"videos": {}}
 
 def save_data(data):
@@ -31,138 +29,92 @@ def save_data(data):
 
 data = load_data()
 
-awaiting_video = {}  # منتظر دریافت ویدیو از ادمین‌ها
+# ======= تابع حذف پیام بعد 30 ثانیه =======
+def delete_message_after_30(chat_id, message_id):
+    time.sleep(30)
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
 
-
-# --- ساخت منوی اصلی با توجه به نقش کاربر ---
-def main_menu(user_id):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("بررسی عضویت ✅")
-    if user_id in ADMINS:
-        markup.add("ارسال ویدیو 🎥")
-        markup.add("پنل ادمین ⚙️")
-    return markup
-
-
-# --- ارسال پیام خوش‌آمدگویی با دکمه‌های کانال و بررسی عضویت ---
-def send_welcome_with_channels(chat_id):
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for ch in CHANNELS:
-        btn = types.InlineKeyboardButton(
-            text=f"عضویت در کانال {ch}",
-            url=f"https://t.me/{ch.strip('@')}"
-        )
-        markup.add(btn)
-
-    check_btn = types.InlineKeyboardButton(
-        text="✅ بررسی عضویت",
-        callback_data="check_membership"
-    )
-    markup.add(check_btn)
-
-    text = "سلام حاجی!\nبرای دریافت ویدیو ابتدا باید عضو کانال‌ها باشید."
-    bot.send_message(chat_id, text, reply_markup=markup)
-
-
-# --- هندلر دستور start ---
-@bot.message_handler(commands=["start"])
-def handle_start(message):
+# ======= استارت و بررسی عضویت =======
+@bot.message_handler(commands=['start'])
+def start_handler(message):
     user_id = message.from_user.id
     args = message.text.split()
 
-    # اگر لینک ویدیو همراه استارت آمد
-    if len(args) > 1 and args[1].startswith("video"):
-        code = args[1][5:]
-        if code in data["videos"]:
-            if check_user_membership(user_id):
-                file_id = data["videos"][code]
-                bot.send_video(user_id, file_id)
-                bot.send_message(user_id, "فیلم ارسال شد.", reply_markup=main_menu(user_id))
-            else:
-                send_welcome_with_channels(user_id)
-        else:
-            bot.send_message(user_id, "ویدیوی مورد نظر پیدا نشد.", reply_markup=main_menu(user_id))
+    if len(args) == 1:
+        # استارت ساده، پیام خوش آمد + توضیح کانال‌ها + دکمه بررسی عضویت
+        keyboard = telebot.types.InlineKeyboardMarkup()
+        for ch in CHANNELS:
+            keyboard.add(telebot.types.InlineKeyboardButton(text=f"کانال {ch}", url=f"https://t.me/{ch.strip('@')}"))
+        keyboard.add(telebot.types.InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_sub"))
+
+        text = (
+            "سلام حاجی!\n\n"
+            "برای دریافت ویدیو ابتدا باید عضو کانال‌ها باشید."
+        )
+        bot.send_message(user_id, text, reply_markup=keyboard)
     else:
-        send_welcome_with_channels(user_id)
+        # اگر لینک استارت همراه پارامتر video بود (لینک ویدیو)
+        param = args[1]
+        if param.startswith("video"):
+            code = param.replace("video", "")
+            file_id = data["videos"].get(code)
+            if not file_id:
+                bot.send_message(user_id, "❌ این ویدیو پیدا نشد یا حذف شده است.")
+                return
 
+            # چک عضویت
+            all_subscribed = True
+            for ch in CHANNELS:
+                status = bot.get_chat_member(ch, user_id).status
+                if status in ["left", "kicked"]:
+                    all_subscribed = False
+                    break
 
-# --- هندلر دکمه بررسی عضویت ---
-@bot.callback_query_handler(func=lambda call: call.data == "check_membership")
-def check_membership(call):
+            if not all_subscribed:
+                bot.send_message(user_id, "❌ شما عضو یکی از کانال‌ها نیستید! ابتدا عضو شوید.")
+                return
+
+            # ارسال ویدیو به کاربر
+            sent = bot.send_video(user_id, file_id)
+
+            # ارسال پیام هشدار بلافاصله بعد ارسال ویدیو
+            bot.send_message(user_id,
+                "⏱ فیلم های ارسالی ربات بعد از 30 ثانیه از ربات پاک میشوند.\n\n"
+                "✅ فیلم را در پی وی دوستان خود یا در پیام های ذخیره شده ارسال و بعد دانلود کنید.️")
+
+            # حذف ویدیو بعد 30 ثانیه
+            threading.Thread(target=delete_message_after_30, args=(user_id, sent.message_id)).start()
+
+# ======= هندلر بررسی عضویت =======
+@bot.callback_query_handler(func=lambda call: call.data == "check_sub")
+def check_subscription(call):
     user_id = call.from_user.id
-    is_member = True
-    not_member_channels = []
-
+    all_subscribed = True
     for ch in CHANNELS:
-        try:
-            member = bot.get_chat_member(ch, user_id)
-            if member.status in ["left", "kicked"]:
-                is_member = False
-                not_member_channels.append(ch)
-        except Exception:
-            is_member = False
-            not_member_channels.append(ch)
+        status = bot.get_chat_member(ch, user_id).status
+        if status in ["left", "kicked"]:
+            all_subscribed = False
+            break
 
-    if is_member:
-        bot.answer_callback_query(
-            call.id, "🎉 شما عضو همه کانال‌ها هستید.", show_alert=True)
-        bot.send_message(user_id, "شما عضو همه کانال‌ها هستید. حالا می‌توانید از ربات استفاده کنید.",
-                         reply_markup=main_menu(user_id))
+    if all_subscribed:
+        bot.answer_callback_query(call.id, "✅ شما عضو همه کانال‌ها هستید. می‌توانید ویدیوها را دریافت کنید.")
     else:
-        text = "❌ شما عضو کانال‌های زیر نیستید:\n"
-        for ch in not_member_channels:
-            text += f"➡️ {ch}\n"
-        text += "\nلطفاً ابتدا عضو کانال‌ها شوید و دوباره بررسی کنید."
-        bot.answer_callback_query(call.id, "شما عضو نیستید!", show_alert=True)
-        bot.send_message(user_id, text)
+        bot.answer_callback_query(call.id, "❌ شما عضو یکی از کانال‌ها نیستید! لطفا ابتدا عضو شوید.")
 
-
-# --- هندلر دکمه‌های متنی ---
-@bot.message_handler(func=lambda m: True)
-def handle_text(message):
+# ======= دستور ارسال ویدیو توسط ادمین =======
+@bot.message_handler(commands=["sendvideo"])
+def send_video_command(message):
     user_id = message.from_user.id
-    text = message.text
-
-    if text == "ارسال ویدیو 🎥":
-        if user_id not in ADMINS:
-            bot.send_message(user_id, "❌ شما ادمین نیستید!")
-            return
-        if not check_user_membership(user_id):
-            bot.send_message(user_id, "❌ ابتدا باید عضو کانال‌ها باشید.")
-            return
-
+    if user_id in ADMINS:
         awaiting_video[user_id] = True
-        bot.send_message(user_id, "لطفا ویدیوی خود را ارسال کنید.")
-
-    elif text == "بررسی عضویت ✅":
-        send_welcome_with_channels(user_id)
-
-    elif text == "پنل ادمین ⚙️":
-        if user_id in ADMINS:
-            send_admin_panel(user_id)
-        else:
-            bot.send_message(user_id, "❌ شما ادمین نیستید!")
-
-    elif text == "بازگشت 🔙":
-        bot.send_message(user_id, "به منوی اصلی بازگشتید.", reply_markup=main_menu(user_id))
-
+        bot.send_message(user_id, "📥 لطفا ویدیوی خود را ارسال کنید.")
     else:
-        bot.send_message(user_id, "دستور نامعتبر است. لطفاً از منو استفاده کنید.")
+        bot.send_message(user_id, "❌ شما ادمین نیستید.")
 
-
-# --- بررسی عضویت کاربر ---
-def check_user_membership(user_id):
-    for ch in CHANNELS:
-        try:
-            member = bot.get_chat_member(ch, user_id)
-            if member.status in ["left", "kicked"]:
-                return False
-        except Exception:
-            return False
-    return True
-
-
-# --- دریافت ویدیو از ادمین ---
+# ======= دریافت ویدیو از ادمین =======
 @bot.message_handler(content_types=["video"])
 def receive_video(message):
     user_id = message.from_user.id
@@ -175,7 +127,6 @@ def receive_video(message):
     video = message.video
     file_id = video.file_id
 
-    # کد یکتا برای ویدیو
     code = str(int(time.time()))
     data["videos"][code] = file_id
     save_data(data)
@@ -184,43 +135,6 @@ def receive_video(message):
     link = f"https://t.me/{bot_username}?start=video{code}"
     bot.send_message(user_id, f"✅ ویدیو ذخیره شد.\nلینک اشتراک:\n{link}")
 
-    sent = bot.send_video(user_id, file_id, caption="🎬 فیلم ذخیره شده — ۳۰ ثانیه دیگر حذف می‌شود.")
-    threading.Thread(target=delete_message_after_30, args=(user_id, sent.message_id)).start()
-
-
-# --- حذف پیام پس از ۳۰ ثانیه ---
-def delete_message_after_30(chat_id, message_id):
-    time.sleep(30)
-    try:
-        bot.delete_message(chat_id, message_id)
-    except Exception:
-        pass
-
-
-# --- پنل ادمین ساده ---
-def send_admin_panel(user_id):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("لیست ویدیوها 📂", "حذف ویدیو ❌")
-    markup.add("خاموش کردن ربات 🔴", "روشن کردن ربات 🟢")
-    markup.add("بازگشت 🔙")
-    bot.send_message(user_id, "پنل ادمین:", reply_markup=markup)
-
-
-# --- وضعیت ربات ---
-bot_active = True
-
-@bot.message_handler(func=lambda m: m.text == "خاموش کردن ربات 🔴" and m.from_user.id in ADMINS)
-def shutdown_bot(message):
-    global bot_active
-    bot_active = False
-    bot.send_message(message.chat.id, "ربات خاموش شد.")
-
-@bot.message_handler(func=lambda m: m.text == "روشن کردن ربات 🟢" and m.from_user.id in ADMINS)
-def start_bot(message):
-    global bot_active
-    bot_active = True
-    bot.send_message(message.chat.id, "ربات روشن شد.")
-
-
-print("ربات در حال اجراست...")
+# ======= اجرای ربات =======
+print("Bot started...")
 bot.infinity_polling()
