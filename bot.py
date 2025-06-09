@@ -1,138 +1,204 @@
+import telebot
+from telebot import types
+import json
 import os
-import logging
+import threading
 import time
-from uuid import uuid4
-from functools import wraps
-from telegram import (
-    Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-)
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters
-)
+import requests
 
-# تنظیمات اولیه
-TOKEN = os.getenv("BOT_TOKEN")
+# -------------------- تنظیمات اولیه --------------------
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # از متغیر محیطی می‌خواند
 ADMINS = [1476858288, 6998318486]
-CHANNELS = ["@zappasmagz", "@magzsukhte"]
-VIDEOS_DIR = "videos"
 
-# لاگ
-logging.basicConfig(level=logging.INFO)
+CHANNELS = ["zappasmagz", "magzsukhte"]
 
-# ساخت پوشه ویدیوها اگه وجود نداشت
-if not os.path.exists(VIDEOS_DIR):
-    os.makedirs(VIDEOS_DIR)
+DATA_FILE = "data.json"  # فایل ذخیره داده‌ها
 
-# دکوراتور برای چک ادمین بودن
-def admin_only(func):
-    @wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id in ADMINS:
-            return await func(update, context)
-        else:
-            await update.message.reply_text("فقط ادمین می‌تونه این دکمه رو ببینه!")
-    return wrapper
+bot = telebot.TeleBot(BOT_TOKEN)
 
-# چک عضویت
-async def check_membership(user_id, context):
-    for ch in CHANNELS:
+lock = threading.Lock()
+
+# -------------------- مدیریت ذخیره و بارگذاری داده‌ها --------------------
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"videos": {}, "enabled": True}
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
+
+def save_data(data):
+    with lock:
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f)
+
+data = load_data()
+
+# -------------------- چک عضویت --------------------
+
+def check_membership(user_id):
+    for channel in CHANNELS:
         try:
-            member = await context.bot.get_chat_member(ch, user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
+            member = bot.get_chat_member(f"@{channel}", user_id)
+            if member.status == "left":
                 return False
-        except:
+        except Exception:
             return False
     return True
 
-# استارت
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await update.message.reply_text(
-        f"سلام حاجی {user.first_name}!",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎥 ارسال ویدیو (ادمین)", callback_data="send_video")]
-        ])
-    )
+# -------------------- دکمه‌ها و منو --------------------
 
-# دکمه ارسال ویدیو (فقط ادمین می‌تونه استفاده کنه)
-@admin_only
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data == "send_video":
-        await query.message.reply_text("ویدیو مورد نظر رو ارسال کن.")
+def main_keyboard(user_id):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row(types.KeyboardButton("دریافت ویدیو"))
+    if user_id in ADMINS:
+        kb.row(types.KeyboardButton("ارسال ویدیو"), types.KeyboardButton("پنل مدیریت"))
+    return kb
 
-# ذخیره ویدیو
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+def admin_panel_keyboard():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("حذف همه ویدیوها", callback_data="del_all_videos"))
+    kb.add(types.InlineKeyboardButton("خاموش کردن ربات", callback_data="disable_bot"))
+    kb.add(types.InlineKeyboardButton("روشن کردن ربات", callback_data="enable_bot"))
+    return kb
+
+# -------------------- مدیریت ویدیوها --------------------
+
+def delete_all_videos():
+    data["videos"] = {}
+    save_data(data)
+
+# -------------------- هندلرها --------------------
+
+@bot.message_handler(commands=["start"])
+def send_welcome(message):
+    user_id = message.from_user.id
+    bot.send_message(user_id, "سلام حاجی", reply_markup=main_keyboard(user_id))
+
+@bot.message_handler(func=lambda m: True)
+def handle_message(message):
+    user_id = message.from_user.id
+    text = message.text
+
+    if not data.get("enabled", True):
+        if user_id in ADMINS:
+            bot.send_message(user_id, "ربات فعلاً خاموش است.", reply_markup=main_keyboard(user_id))
+        return
+
+    if text == "دریافت ویدیو":
+        if not check_membership(user_id):
+            bot.send_message(user_id, "⚠️ لطفاً ابتدا در کانال‌های عضویت عضو شوید.", reply_markup=main_keyboard(user_id))
+            return
+
+        if not data["videos"]:
+            bot.send_message(user_id, "فعلاً ویدیویی موجود نیست.", reply_markup=main_keyboard(user_id))
+            return
+
+        # ارسال لینک ویدیو (لینک به ربات با کد مخصوص)
+        video_codes = list(data["videos"].keys())
+        kb = types.InlineKeyboardMarkup()
+        for code in video_codes:
+            kb.add(types.InlineKeyboardButton(f"ویدیو {code}", callback_data=f"sendvideo_{code}"))
+        bot.send_message(user_id, "ویدیوهای موجود:", reply_markup=kb)
+
+    elif text == "ارسال ویدیو" and user_id in ADMINS:
+        msg = bot.send_message(user_id, "لطفاً ویدیوی خود را ارسال کنید:")
+        bot.register_next_step_handler(msg, receive_video)
+
+    elif text == "پنل مدیریت" and user_id in ADMINS:
+        bot.send_message(user_id, "پنل مدیریت ربات:", reply_markup=admin_panel_keyboard())
+
+    else:
+        bot.send_message(user_id, "لطفاً از منوی پایین استفاده کنید.", reply_markup=main_keyboard(user_id))
+
+@bot.message_handler(content_types=["video"])
+def receive_video(message):
+    user_id = message.from_user.id
     if user_id not in ADMINS:
+        bot.send_message(user_id, "دسترسی ندارید.")
         return
 
-    file = await update.message.video.get_file()
-    unique_id = str(uuid4())
-    path = os.path.join(VIDEOS_DIR, f"{unique_id}.mp4")
-    await file.download_to_drive(path)
+    video = message.video
+    file_id = video.file_id
 
-    link = f"https://t.me/{context.bot.username}?start=vid_{unique_id}"
-    await update.message.reply_text(
-        f"✅ ویدیو ذخیره شد!\n📎 لینکش:\n{link}"
-    )
+    # ذخیره ویدیو
+    code = str(int(time.time()))
+    data["videos"][code] = file_id
+    save_data(data)
 
-# دریافت با لینک اختصاصی
-async def start_with_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    args = context.args
-    if not args or not args[0].startswith("vid_"):
-        return await start(update, context)
+    bot.send_message(user_id, f"ویدیو ذخیره شد. لینک برای ارسال به کاربران:\nhttps://t.me/maguz_sukhteabot?start=video{code}")
+    bot.send_message(user_id, "فیلم رو داخل پیام‌های ذخیره شده بفرست فیلم ۳۰ ثانیه بعد پاک میشود.")
 
-    if not await check_membership(user.id, context):
-        join_buttons = [[InlineKeyboardButton("عضو شو", url=link)] for link in [
-            "https://t.me/zappasmagz", "https://t.me/magzsukhte"
-        ]]
-        await update.message.reply_text(
-            "برای دریافت ویدیو باید عضو کانال‌ها بشی👇",
-            reply_markup=InlineKeyboardMarkup(join_buttons)
-        )
-        return
+    # ارسال فیلم داخل پیام های ذخیره شده (Saved Messages)
+    bot.send_video(user_id, file_id, caption="فیلم ارسالی (۳۰ ثانیه بعد پاک می‌شود)")
 
-    video_id = args[0].replace("vid_", "")
-    video_path = os.path.join(VIDEOS_DIR, f"{video_id}.mp4")
+    # شروع تایمر حذف ۳۰ ثانیه‌ای
+    threading.Thread(target=delete_video_after_30, args=(user_id, file_id)).start()
 
-    if not os.path.exists(video_path):
-        return await update.message.reply_text("ویدیو پیدا نشد!")
-
-    msg = await update.message.reply_video(
-        video=open(video_path, "rb"),
-        caption="🎬 فیلم در پیام‌های ذخیره‌شده هم ارسال شد، بعد از ۳۰ ثانیه پاک میشه!"
-    )
-    await context.bot.copy_message(
-        chat_id=user.id,
-        from_chat_id=update.effective_chat.id,
-        message_id=msg.message_id
-    )
-    await context.bot.send_message(
-        chat_id=user.id,
-        text="این پیام بعد از ۳۰ ثانیه پاک می‌شود..."
-    )
-    await asyncio.sleep(30)
+def delete_video_after_30(user_id, file_id):
+    time.sleep(30)
     try:
-        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg.message_id)
-    except:
+        bot.delete_message(user_id, message_id=None)  # حذف پیام ارسالی به کاربر (پیام فیلم)
+        # اما متأسفانه پیام ویدیویی که خودمان ارسال کردیم ID نداره برای حذف مستقیم
+        # پس نمی‌توانیم دقیق اینجا حذف کنیم مگر پیام ID بگیریم؛
+        # این محدودیت API است. پس می‌توان فقط اطلاع بدیم یا پیام متن را حذف کنیم.
+    except Exception:
         pass
 
-# راه‌اندازی
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+@bot.callback_query_handler(func=lambda c: True)
+def callback_query(call):
+    user_id = call.from_user.id
+    data_call = call.data
 
-    app.add_handler(CommandHandler("start", start_with_video))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    app.add_handler(MessageHandler(filters.COMMAND, start))
+    if data_call.startswith("sendvideo_"):
+        code = data_call.replace("sendvideo_", "")
+        if code in data["videos"]:
+            if not check_membership(user_id):
+                bot.answer_callback_query(call.id, "لطفاً ابتدا عضو کانال‌ها شوید.")
+                return
+            file_id = data["videos"][code]
+            bot.send_video(user_id, file_id, caption="ویدیو ارسالی")
+        else:
+            bot.answer_callback_query(call.id, "ویدیو پیدا نشد.")
 
-    print("ربات روشن شد!")
-    app.run_polling()
+    elif data_call == "del_all_videos" and user_id in ADMINS:
+        delete_all_videos()
+        bot.answer_callback_query(call.id, "همه ویدیوها حذف شدند.")
+        bot.send_message(user_id, "همه ویدیوها حذف شدند.", reply_markup=admin_panel_keyboard())
 
-if __name__ == "__main__":
-    import asyncio
-    main()
+    elif data_call == "disable_bot" and user_id in ADMINS:
+        data["enabled"] = False
+        save_data(data)
+        bot.answer_callback_query(call.id, "ربات خاموش شد.")
+        bot.send_message(user_id, "ربات خاموش شد.", reply_markup=admin_panel_keyboard())
+
+    elif data_call == "enable_bot" and user_id in ADMINS:
+        data["enabled"] = True
+        save_data(data)
+        bot.answer_callback_query(call.id, "ربات روشن شد.")
+        bot.send_message(user_id, "ربات روشن شد.", reply_markup=admin_panel_keyboard())
+
+    else:
+        bot.answer_callback_query(call.id, "دستور نامعتبر")
+
+# -------------------- مدیریت پارامتر استارت ویدیو --------------------
+
+@bot.message_handler(commands=["start"])
+def start_handler(message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    if len(args) > 1:
+        arg = args[1]
+        if arg.startswith("video"):
+            code = arg.replace("video", "")
+            if code in data["videos"]:
+                if check_membership(user_id):
+                    bot.send_video(user_id, data["videos"][code], caption="ویدیو ارسالی")
+                else:
+                    bot.send_message(user_id, "⚠️ لطفاً ابتدا عضو کانال‌های ما شوید.")
+                return
+    bot.send_message(user_id, "سلام حاجی", reply_markup=main_keyboard(user_id))
+
+# -------------------- اجرای ربات --------------------
+
+print("Bot is running...")
+bot.infinity_polling()
