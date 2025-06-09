@@ -50,7 +50,7 @@ def send_main_menu(user_id):
     keyboard = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     keyboard.add(
         telebot.types.KeyboardButton("ارسال ویدیو"),
-        telebot.types.KeyboardButton("پنل ادمین")
+        telebot.types.KeyboardButton("پنل ننننادمین")
     )
     bot.send_message(user_id, "منوی اصلی:", reply_markup=keyboard)
 
