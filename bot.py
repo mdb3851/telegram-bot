@@ -3,14 +3,12 @@ import time
 import threading
 import json
 
-# تنظیمات اولیه
 TOKEN = "7721995609:AAHFik1G49bu0OACtFWpv_NBHDzOESxVtTI"
 ADMINS = [1476858288, 6998318486]
-CHANNELS = ["https://t.me/zappasmagz", "https://t.me/magzsukhte"]
+CHANNELS = ["zappasmagz", "magzsukhte"]  # فقط یوزرنیم کانال بدون @ و https
 
 bot = telebot.TeleBot(TOKEN)
 
-# داده‌ها (ویدیوها و کاربران)
 try:
     with open("data.json", "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -21,22 +19,54 @@ def save_data(d):
     with open("data.json", "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=4)
 
-# متغیر برای وضعیت انتظار ویدیو (برای هر ادمین)
-awaiting_video = {}  # {user_id: True/False}
+awaiting_video = {}
 
-# هندلر شروع ربات (مثلا وقتی کاربر /start میزند)
+def is_member(chat_id, user_id):
+    # چک عضویت کاربر در کانال‌ها
+    for channel in CHANNELS:
+        try:
+            member = bot.get_chat_member(f"@{channel}", user_id)
+            if member.status not in ['left', 'kicked']:
+                return True
+        except Exception as e:
+            print(f"Error checking membership in @{channel}: {e}")
+    return False
+
 @bot.message_handler(commands=["start"])
 def start_handler(message):
     user_id = message.from_user.id
-    username = message.from_user.username or "ناشناخته"
+    args = message.text.split()
 
-    # ذخیره کاربر
-    data["users"][str(user_id)] = username
-    save_data(data)
+    if len(args) == 1:
+        # فقط /start بدون پارامتر
+        bot.send_message(user_id, "سلام حاجی!\nبرای دریافت ویدیو ابتدا باید عضو کانال‌ها باشید.")
+        # ذخیره کاربر
+        username = message.from_user.username or "ناشناخته"
+        data["users"][str(user_id)] = username
+        save_data(data)
+        return
 
-    bot.send_message(user_id, "سلام حاجی!\nبرای دریافت ویدیو ابتدا باید عضو کانال‌ها باشید.")
+    param = args[1]
 
-# هندلر پیام متنی برای دکمه‌ها
+    if param.startswith("video"):
+        code = param[5:]  # حذف 'video' و گرفتن کد
+
+        # چک ویدیو موجود باشد
+        file_id = data["videos"].get(code)
+        if not file_id:
+            bot.send_message(user_id, "ویدیو پیدا نشد یا حذف شده است.")
+            return
+
+        # چک عضویت کانال‌ها
+        if not is_member(message.chat.id, user_id):
+            bot.send_message(user_id,
+                "برای دریافت ویدیو باید ابتدا عضو همه کانال‌های زیر شوید:\n" +
+                "\n".join([f"https://t.me/{ch}" for ch in CHANNELS]))
+            return
+
+        # ارسال ویدیو
+        bot.send_video(user_id, file_id)
+
 @bot.message_handler(func=lambda m: True)
 def menu_handler(message):
     user_id = message.from_user.id
@@ -49,7 +79,6 @@ def menu_handler(message):
     else:
         bot.send_message(user_id, "دستور نامعتبر یا اجازه دسترسی ندارید.")
 
-# هندلر دریافت ویدیو
 @bot.message_handler(content_types=["video"])
 def receive_video(message):
     user_id = message.from_user.id
@@ -74,7 +103,6 @@ def receive_video(message):
 
     threading.Thread(target=delete_message_after_30, args=(user_id, sent.message_id)).start()
 
-# تابع حذف پیام پس از ۳۰ ثانیه
 def delete_message_after_30(chat_id, message_id):
     time.sleep(30)
     try:
@@ -82,26 +110,4 @@ def delete_message_after_30(chat_id, message_id):
     except Exception as e:
         print(f"❌ خطا در حذف پیام: {e}")
 
-# هندلر استارت با پارامتر ویدیو (وقتی کاربر لینک ویدیو را باز می‌کند)
-@bot.message_handler(commands=["start"])
-def start_video_handler(message):
-    text = message.text
-    user_id = message.from_user.id
-
-    if text.startswith("/start video"):
-        code = text.replace("/start video", "").strip()
-        file_id = data["videos"].get(code)
-
-        if not file_id:
-            bot.send_message(user_id, "ویدیو پیدا نشد یا حذف شده است.")
-            return
-
-        # چک کانال بودن کاربر (عضویت)
-        # در اینجا کد چک کانال باید اضافه شود، چون در تلگرام API رسمی برای این نیست
-        # به طور ساده فرض می‌کنیم کاربر عضو هست
-        # اگر بخواهی می‌توانم کد چک کانال با استفاده از telebot api یا کتابخانه‌های دیگر بدم
-
-        bot.send_video(user_id, file_id)
-
-# شروع ربات
 bot.infinity_polling()
