@@ -1,171 +1,154 @@
-import os
 import json
-import asyncio
-import logging
 import random
-from uuid import uuid4
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-from telegram.ext import Application, CommandHandler, CallbackContext, MessageHandler, filters, CallbackQueryHandler
+import string
+import os
 
-# پیکربندی لاگ
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    CallbackContext,
+    CallbackQueryHandler,
+)
 
-# توکن و تنظیمات
 TOKEN = "7721995609:AAHFik1G49bu0OACtFWpv_NBHDzOESxVtTI"
 ADMIN_IDS = [1476858288, 6998318486]
-CHANNEL_IDS = ['@zappasmagz', '@magzsukhte']
-BOT_USERNAME = "@maguz_sukhteabot"
+CHANNELS = ["@zappasmagz", "@magzsukhte"]
+VIDEO_FILE = "videos.json"
+BOT_USERNAME = "maguz_sukhteabot"
 
-# فایل‌های دیتابیس ساده
-VIDEO_DB_FILE = "videos.json"
-USER_DB_FILE = "users.json"
+# Load videos
+if os.path.exists(VIDEO_FILE):
+    with open(VIDEO_FILE, "r") as f:
+        videos = json.load(f)
+else:
+    videos = {}
 
-# حالت فعال یا غیرفعال بودن ربات
-bot_enabled = True
+def save_videos():
+    with open(VIDEO_FILE, "w") as f:
+        json.dump(videos, f)
 
-# بررسی وجود فایل دیتابیس
-if not os.path.exists(VIDEO_DB_FILE):
-    with open(VIDEO_DB_FILE, "w") as f:
-        json.dump({}, f)
-if not os.path.exists(USER_DB_FILE):
-    with open(USER_DB_FILE, "w") as f:
-        json.dump({}, f)
+def generate_token():
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=12))
 
-# ذخیره و بارگذاری ویدیوها
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
 
-def save_video(video_id, file_id):
-    with open(VIDEO_DB_FILE, "r") as f:
-        data = json.load(f)
-    data[video_id] = file_id
-    with open(VIDEO_DB_FILE, "w") as f:
-        json.dump(data, f)
-
-def get_video_file(video_id):
-    with open(VIDEO_DB_FILE, "r") as f:
-        data = json.load(f)
-    return data.get(video_id)
-
-# ذخیره کاربران
-
-def save_user(user_id):
-    with open(USER_DB_FILE, "r") as f:
-        users = json.load(f)
-    users[str(user_id)] = str(datetime.now())
-    with open(USER_DB_FILE, "w") as f:
-        json.dump(users, f)
-
-def get_user_count():
-    with open(USER_DB_FILE, "r") as f:
-        users = json.load(f)
-    return len(users)
-
-# بررسی عضویت در کانال‌ها
-async def check_membership(user_id, context):
-    for channel in CHANNEL_IDS:
-        try:
-            member = await context.bot.get_chat_member(chat_id=channel, user_id=user_id)
-            if member.status in ["left", "kicked"]:
-                return False
-        except:
-            return False
-    return True
-
-# پیام خوش‌آمد و دکمه‌ها
 async def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-    save_user(user_id)
-    if not await check_membership(user_id, context):
-        keyboard = [[InlineKeyboardButton("عضویت در کانال 1", url=f"https://t.me/{CHANNEL_IDS[0][1:]}"),
-                     InlineKeyboardButton("عضویت در کانال 2", url=f"https://t.me/{CHANNEL_IDS[1][1:]}")]]
-        await update.message.reply_text("برای دریافت ویدیو ابتدا در کانال‌ها عضو شوید.", reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-    await update.message.reply_text("به ربات خوش آمدید.")
+    keyboard = [[KeyboardButton("ارسال ویدیو 📤")]]
+    if is_admin(user_id):
+        keyboard[0].append(KeyboardButton("پنل ادمین 🛠"))
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("سلام حاجی", reply_markup=reply_markup)
 
-# دریافت و ارسال ویدیو از لینک خاص
-async def handle_video_request(update: Update, context: CallbackContext):
+async def handle_text(update: Update, context: CallbackContext):
+    text = update.message.text
     user_id = update.effective_user.id
-    save_user(user_id)
 
-    if not bot_enabled:
-        await update.message.reply_text("ربات غیرفعال است.")
-        return
+    if text == "ارسال ویدیو 📤":
+        if is_admin(user_id):
+            await update.message.reply_text("لطفاً ویدیوت رو بفرست.")
+            context.user_data["awaiting_video"] = True
+        else:
+            await update.message.reply_text("فقط مدیران می‌تونن ویدیو ارسال کنن.")
 
-    parts = update.message.text.split(" ")
-    if len(parts) != 2:
-        await update.message.reply_text("لینک نامعتبر است.")
-        return
+    elif text == "پنل ادمین 🛠":
+        if is_admin(user_id):
+            await update.message.reply_text("🔧 پنل ادمین آماده‌ست!")
+        else:
+            await update.message.reply_text("شما دسترسی ندارید.")
 
-    video_id = parts[1]
-    file_id = get_video_file(video_id)
-
-    if not file_id:
-        await update.message.reply_text("ویدیو یافت نشد.")
-        return
-
-    if not await check_membership(user_id, context):
-        keyboard = [[InlineKeyboardButton("عضویت در کانال 1", url=f"https://t.me/{CHANNEL_IDS[0][1:]}"),
-                     InlineKeyboardButton("عضویت در کانال 2", url=f"https://t.me/{CHANNEL_IDS[1][1:]}")]]
-        await update.message.reply_text("برای دریافت ویدیو ابتدا در کانال‌ها عضو شوید.", reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
-    sent = await update.message.reply_video(file_id)
-    await asyncio.sleep(30)
-    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=sent.message_id)
-
-    await update.message.reply_text("⏱ فیلم های ارسالی ربات بعد از 30ثانیه از ربات پاک میشوند.\n\n✅ فیلم را در پی وی دوستان خود یا در پیام های ذخیره شده ارسال و بعد دانلود کنید.️")
-
-# ادمین ارسال ویدیو
-async def receive_video(update: Update, context: CallbackContext):
+async def handle_video(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
+
+    if not is_admin(user_id) or not context.user_data.get("awaiting_video"):
         return
-    video = update.message.video
+
+    context.user_data["awaiting_video"] = False
+
+    video = update.message.video or update.message.document
     if not video:
-        await update.message.reply_text("لطفاً یک ویدیو ارسال کنید.")
+        await update.message.reply_text("ویدیو معتبر نیست.")
         return
-    video_id = str(uuid4())[:8]
-    save_video(video_id, video.file_id)
-    await update.message.reply_text(f"✅ ویدیو ذخیره شد. لینک:\n\nhttps://t.me/{BOT_USERNAME}?start={video_id}")
 
-# پنل ادمین
-async def admin_panel(update: Update, context: CallbackContext):
+    file_id = video.file_id
+    token = generate_token()
+    videos[token] = file_id
+    save_videos()
+
+    link = f"https://t.me/{BOT_USERNAME}?start={token}"
+    await update.message.reply_text(f"✅ ویدیو ذخیره شد.\n\n🎯 لینک: {link}")
+
+async def start_token(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        return
-    keyboard = [
-        [InlineKeyboardButton("📊 آمار کاربران", callback_data="stats")],
-        [InlineKeyboardButton("🔴 خاموش کردن ربات" if bot_enabled else "🟢 روشن کردن ربات", callback_data="toggle")]
-    ]
-    await update.message.reply_text("🎛 پنل مدیریت:", reply_markup=InlineKeyboardMarkup(keyboard))
+    args = context.args
 
-# کنترل پنل ادمین
-async def admin_callback(update: Update, context: CallbackContext):
-    global bot_enabled
+    if not args:
+        await start(update, context)
+        return
+
+    token = args[0]
+    if token not in videos:
+        await update.message.reply_text("❌ ویدیو یافت نشد.")
+        return
+
+    # Check subscription
+    for channel in CHANNELS:
+        try:
+            member = await context.bot.get_chat_member(channel, user_id)
+            if member.status in ['left', 'kicked']:
+                raise Exception("Not a member")
+        except:
+            join_buttons = [
+                [InlineKeyboardButton("عضویت در کانال اول 📢", url=f"https://t.me/{CHANNELS[0][1:]}")],
+                [InlineKeyboardButton("عضویت در کانال دوم 📢", url=f"https://t.me/{CHANNELS[1][1:]}")],
+                [InlineKeyboardButton("بررسی عضویت ✅", callback_data=f"check:{token}")]
+            ]
+            await update.message.reply_text(
+                "🚫 برای دریافت ویدیو ابتدا در دو کانال زیر عضو شوید:",
+                reply_markup=InlineKeyboardMarkup(join_buttons)
+            )
+            return
+
+    await context.bot.send_video(chat_id=user_id, video=videos[token])
+
+async def check_subscription(update: Update, context: CallbackContext):
     query = update.callback_query
-    user_id = query.from_user.id
-    if user_id not in ADMIN_IDS:
-        return
     await query.answer()
-    if query.data == "toggle":
-        bot_enabled = not bot_enabled
-        await query.edit_message_text("✅ ربات اکنون {} است.".format("فعال" if bot_enabled else "غیرفعال"))
-    elif query.data == "stats":
-        count = get_user_count()
-        await query.edit_message_text(f"👤 تعداد کاربران: {count}")
+    user_id = query.from_user.id
+    token = query.data.split(":")[1]
 
-async def main():
+    for channel in CHANNELS:
+        try:
+            member = await context.bot.get_chat_member(channel, user_id)
+            if member.status in ['left', 'kicked']:
+                raise Exception("Not a member")
+        except:
+            await query.edit_message_text("❌ هنوز عضو هر دو کانال نشدید.")
+            return
+
+    await context.bot.send_video(chat_id=user_id, video=videos[token])
+    await query.edit_message_text("✅ ویدیو برات ارسال شد!")
+
+def main():
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("panel", admin_panel))
-    app.add_handler(CallbackQueryHandler(admin_callback))
-    app.add_handler(MessageHandler(filters.Regex(r"^/start "), handle_video_request))
-    app.add_handler(MessageHandler(filters.VIDEO, receive_video))
 
-    print("ربات آماده اجرا است.")
-    await app.run_polling()
+    app.add_handler(CommandHandler("start", start_token))
+    app.add_handler(MessageHandler(filters.TEXT, handle_text))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
+    app.add_handler(CallbackQueryHandler(check_subscription, pattern=r"check:"))
+
+    print("🤖 ربات با موفقیت راه‌اندازی شد.")
+    app.run_polling()
 
 if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()
-    asyncio.get_event_loop().run_until_complete(main())
+    main()
