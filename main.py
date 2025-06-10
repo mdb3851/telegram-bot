@@ -2,7 +2,7 @@ import json
 import random
 import string
 import os
-
+import asyncio
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -23,18 +23,30 @@ TOKEN = "7721995609:AAHFik1G49bu0OACtFWpv_NBHDzOESxVtTI"
 ADMIN_IDS = [1476858288, 6998318486]
 CHANNELS = ["@zappasmagz", "@magzsukhte"]
 VIDEO_FILE = "videos.json"
+USERS_FILE = "users.json"
 BOT_USERNAME = "maguz_sukhteabot"
+
+videos = {}
+users = set()
+bot_enabled = True
 
 # Load videos
 if os.path.exists(VIDEO_FILE):
     with open(VIDEO_FILE, "r") as f:
         videos = json.load(f)
-else:
-    videos = {}
+
+# Load users
+if os.path.exists(USERS_FILE):
+    with open(USERS_FILE, "r") as f:
+        users = set(json.load(f))
 
 def save_videos():
     with open(VIDEO_FILE, "w") as f:
         json.dump(videos, f)
+
+def save_users():
+    with open(USERS_FILE, "w") as f:
+        json.dump(list(users), f)
 
 def generate_token():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=12))
@@ -44,6 +56,9 @@ def is_admin(user_id):
 
 async def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
+    users.add(user_id)
+    save_users()
+
     keyboard = [[KeyboardButton("ارسال ویدیو 📤")]]
     if is_admin(user_id):
         keyboard[0].append(KeyboardButton("پنل ادمین 🛠"))
@@ -51,8 +66,13 @@ async def start(update: Update, context: CallbackContext):
     await update.message.reply_text("سلام حاجی", reply_markup=reply_markup)
 
 async def handle_text(update: Update, context: CallbackContext):
+    global bot_enabled
     text = update.message.text
     user_id = update.effective_user.id
+
+    if not bot_enabled and not is_admin(user_id):
+        await update.message.reply_text("⛔ ربات فعلاً غیرفعال است.")
+        return
 
     if text == "ارسال ویدیو 📤":
         if is_admin(user_id):
@@ -63,7 +83,13 @@ async def handle_text(update: Update, context: CallbackContext):
 
     elif text == "پنل ادمین 🛠":
         if is_admin(user_id):
-            await update.message.reply_text("🔧 پنل ادمین آماده‌ست!")
+            status = "روشن ✅" if bot_enabled else "خاموش ❌"
+            await update.message.reply_text(
+                f"🔧 پنل ادمین:\n\n📊 کاربران: {len(users)}\n🎞 ویدیوها: {len(videos)}\n⚙ وضعیت ربات: {status}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("روشن / خاموش کردن ربات 🔁", callback_data="toggle_bot")]
+                ])
+            )
         else:
             await update.message.reply_text("شما دسترسی ندارید.")
 
@@ -90,8 +116,10 @@ async def handle_video(update: Update, context: CallbackContext):
 
 async def start_token(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-    args = context.args
+    users.add(user_id)
+    save_users()
 
+    args = context.args
     if not args:
         await start(update, context)
         return
@@ -119,7 +147,7 @@ async def start_token(update: Update, context: CallbackContext):
             )
             return
 
-    await context.bot.send_video(chat_id=user_id, video=videos[token])
+    await send_timed_video(update, context, user_id, videos[token])
 
 async def check_subscription(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -139,6 +167,30 @@ async def check_subscription(update: Update, context: CallbackContext):
     await context.bot.send_video(chat_id=user_id, video=videos[token])
     await query.edit_message_text("✅ ویدیو برات ارسال شد!")
 
+    await asyncio.sleep(30)
+    try:
+        await context.bot.delete_message(chat_id=user_id, message_id=query.message.message_id + 1)
+        await context.bot.send_message(chat_id=user_id, text="⏱ فیلم‌های ارسالی بعد از 30 ثانیه پاک می‌شن. لطفاً ذخیره کن.")
+    except:
+        pass
+
+async def send_timed_video(update: Update, context: CallbackContext, chat_id, file_id):
+    message = await context.bot.send_video(chat_id=chat_id, video=file_id)
+    await asyncio.sleep(30)
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message.message_id)
+        await context.bot.send_message(chat_id=chat_id, text="⏱ فیلم‌های ارسالی بعد از 30 ثانیه پاک می‌شن. لطفاً ذخیره کن.")
+    except:
+        pass
+
+async def toggle_bot(update: Update, context: CallbackContext):
+    global bot_enabled
+    query = update.callback_query
+    await query.answer()
+    bot_enabled = not bot_enabled
+    status = "روشن ✅" if bot_enabled else "خاموش ❌"
+    await query.edit_message_text(f"⚙ وضعیت ربات: {status}")
+
 def main():
     app = Application.builder().token(TOKEN).build()
 
@@ -146,6 +198,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT, handle_text))
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
     app.add_handler(CallbackQueryHandler(check_subscription, pattern=r"check:"))
+    app.add_handler(CallbackQueryHandler(toggle_bot, pattern="toggle_bot"))
 
     print("🤖 ربات با موفقیت راه‌اندازی شد.")
     app.run_polling()
